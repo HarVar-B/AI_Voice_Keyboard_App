@@ -669,13 +669,23 @@ export default function DictationPage() {
       finalTranscript = transcript.split("\n").filter((line) => !line.includes("...")).join(" ").trim();
       // Store original content BEFORE attempting post-processing
       // This ensures we always have the original if post-processing fails
-      let originalBeforeFinalPostProcess = originalTranscript.split("\n").filter((line) => !line.includes("...")).join(" ").trim() || finalTranscript;
+      // Use originalTranscript state which tracks content before any post-processing
+      let originalBeforeFinalPostProcess = originalTranscript.split("\n").filter((line) => !line.includes("...")).join(" ").trim();
+      
+      // If originalTranscript is empty or same as final, use finalTranscript as original
+      // This handles cases where no post-processing was attempted during recording
+      if (!originalBeforeFinalPostProcess || originalBeforeFinalPostProcess === finalTranscript) {
+        originalBeforeFinalPostProcess = finalTranscript;
+      }
       
       // Post-process the entire final transcript if available
       let finalPostProcessModel = postProcessingModel;
       let postProcessingSucceeded = false;
       
       if (finalTranscript.length > 0) {
+        // Store the transcript before post-processing attempt
+        const transcriptBeforePostProcess = finalTranscript;
+        
         try {
           const response = await fetch("/api/post-process", {
             method: "POST",
@@ -689,7 +699,7 @@ export default function DictationPage() {
             const data = await response.json();
             if (data.improved && data.text) {
               // Store original before final post-processing
-              originalBeforeFinalPostProcess = finalTranscript;
+              originalBeforeFinalPostProcess = transcriptBeforePostProcess;
               finalTranscript = data.text;
               finalPostProcessModel = data.model || "gpt-5-nano";
               postProcessingSucceeded = true;
@@ -697,6 +707,8 @@ export default function DictationPage() {
               // Post-processing was attempted but didn't improve
               console.log("Final post-processing completed but text was not improved");
               postProcessingSucceeded = false;
+              // Ensure we have the original content
+              originalBeforeFinalPostProcess = transcriptBeforePostProcess;
             }
           } else {
             // Handle non-OK responses
@@ -709,8 +721,12 @@ export default function DictationPage() {
           }
         } catch (error) {
           console.error("Error post-processing final transcript:", error);
-          // Post-processing failed - we'll save the original content
+          // Post-processing failed - ensure we save the original content
           postProcessingSucceeded = false;
+          // Use the transcript before post-processing attempt as original
+          originalBeforeFinalPostProcess = transcriptBeforePostProcess;
+          // Keep finalTranscript as the original (no post-processing applied)
+          finalTranscript = transcriptBeforePostProcess;
           
           // Inform user about post-processing failure
           const errorMessage = error instanceof Error ? error.message : "Post-processing failed";
@@ -736,13 +752,33 @@ export default function DictationPage() {
         // Save with all metadata
         // Always preserve original content - if post-processing failed, we still want to save the original
         const contentToSave = finalTranscript;
-        // Save original content if it's different from final content, or if post-processing was attempted
-        // This ensures we preserve the original transcription even if post-processing fails
-        const originalContentToSave = originalBeforeFinalPostProcess !== contentToSave 
-          ? originalBeforeFinalPostProcess 
-          : null;
+        
+        // Determine original content to save:
+        // - If post-processing succeeded: save the original before post-processing
+        // - If post-processing failed: save the original (which is same as contentToSave, but we save it for record-keeping)
+        // - If no post-processing was attempted: don't save originalContent (it's the same as content)
+        let originalContentToSave: string | null = null;
+        if (postProcessingSucceeded) {
+          // Post-processing succeeded: save the original before post-processing
+          originalContentToSave = originalBeforeFinalPostProcess;
+        } else if (originalBeforeFinalPostProcess && originalBeforeFinalPostProcess !== contentToSave) {
+          // Post-processing was attempted but failed or didn't improve: save original if different
+          originalContentToSave = originalBeforeFinalPostProcess;
+        } else if (!postProcessingSucceeded && originalBeforeFinalPostProcess) {
+          // Post-processing failed: save original content even if same (for record-keeping)
+          // This ensures we have a record of what was transcribed originally
+          originalContentToSave = originalBeforeFinalPostProcess;
+        }
         
         const wasPostProcessed = postProcessingSucceeded && finalPostProcessModel !== null;
+        
+        console.log("Saving transcription:", {
+          contentLength: contentToSave.length,
+          originalLength: originalContentToSave?.length || 0,
+          postProcessed: wasPostProcessed,
+          postProcessingSucceeded,
+          transcriptionSource,
+        });
         
         setIsSaving(true);
         try {
