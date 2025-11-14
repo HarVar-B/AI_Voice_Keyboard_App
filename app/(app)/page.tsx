@@ -24,13 +24,17 @@ export default function DictationPage() {
   const [transcript, setTranscript] = useState("");
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isPostProcessing, setIsPostProcessing] = useState(false);
   const [transcriptions, setTranscriptions] = useState<Transcription[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
+  const [useWebSpeechAPI, setUseWebSpeechAPI] = useState(false);
+  const pendingPostProcessingRef = useRef<Map<string, string>>(new Map());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const speechRecognitionRef = useRef<any>(null);
   const pendingTranscriptionsRef = useRef(0);
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const { showToast } = useToast();
@@ -40,11 +44,22 @@ export default function DictationPage() {
     fetchTranscriptions();
   }, []);
 
+  // Check if Web Speech API is available
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      setUseWebSpeechAPI(true);
+    }
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.stop();
       }
       if (durationIntervalRef.current) {
         clearInterval(durationIntervalRef.current);
@@ -132,6 +147,160 @@ export default function DictationPage() {
   };
 
   /**
+   * Post-processes transcription text using OpenAI GPT to improve quality.
+   * If post-processing fails, keeps the original text.
+   * 
+   * @param text - The text to improve
+   * @param originalText - The original text to replace (for finding it in transcript)
+   */
+  const postProcessText = useCallback(async (text: string, originalText: string) => {
+    if (!text.trim()) return;
+
+    const textId = `${Date.now()}-${Math.random()}`;
+    pendingPostProcessingRef.current.set(textId, originalText);
+
+    setIsPostProcessing(true);
+    try {
+      const response = await fetch("/api/post-process", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Post-processing failed");
+      }
+
+      const data = await response.json();
+      
+      if (data.improved && data.text && data.text !== originalText) {
+        // Replace the original text with improved version
+        setTranscript((prev) => {
+          const prevFinal = prev.split("\n").filter((line) => !line.includes("...")).join(" ");
+          // Replace the last occurrence of the original text (most recent)
+          const lastIndex = prevFinal.lastIndexOf(originalText);
+          if (lastIndex !== -1) {
+            const before = prevFinal.substring(0, lastIndex);
+            const after = prevFinal.substring(lastIndex + originalText.length);
+            return before + data.text + after + (prev.includes("...") ? `\n${prev.split("\n").find((line) => line.includes("...")) || ""}` : "");
+          }
+          // If not found, try to replace the text as-is
+          return prev.replace(originalText, data.text);
+        });
+      }
+    } catch (error) {
+      console.error("Error post-processing text:", error);
+      // Keep original text - no action needed
+    } finally {
+      pendingPostProcessingRef.current.delete(textId);
+      if (pendingPostProcessingRef.current.size === 0) {
+        setIsPostProcessing(false);
+      }
+    }
+  }, []);
+
+  /**
+   * Starts recording using Web Speech API (free, browser-based transcription).
+   * Falls back to MediaRecorder + OpenAI API if Web Speech API is not available.
+   */
+  const startRecordingWithWebSpeech = useCallback(async () => {
+    try {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      
+      if (!SpeechRecognition) {
+        throw new Error("Web Speech API not supported in this browser. Please use Chrome or Edge.");
+      }
+
+      // Clear previous transcript
+      setTranscript("");
+      
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = "en-US";
+
+      // Fetch dictionary words for better accuracy
+      try {
+        const dictResponse = await fetch("/api/dictionary");
+        if (dictResponse.ok) {
+          const dictData = await dictResponse.json();
+          // Note: Web Speech API doesn't support custom dictionary directly,
+          // but we can use it for post-processing if needed
+        }
+      } catch (error) {
+        console.error("Error fetching dictionary:", error);
+      }
+
+      recognition.onresult = (event: any) => {
+        let interimTranscript = "";
+        let finalTranscript = "";
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript + " ";
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+
+        // Update transcript immediately with interim results
+        setTranscript((prev) => {
+          // Remove previous interim results and add new ones
+          const prevFinal = prev.split("\n").filter((line) => !line.includes("...")).join(" ");
+          const newText = prevFinal + finalTranscript + (interimTranscript ? `\n${interimTranscript}...` : "");
+          return newText;
+        });
+
+        // Post-process final transcriptions if available
+        if (finalTranscript.trim()) {
+          const finalText = finalTranscript.trim();
+          // Post-process asynchronously - it will update the transcript when done
+          postProcessText(finalText, finalText);
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        if (event.error === "no-speech") {
+          // This is normal, just means no speech detected yet
+          return;
+        }
+        showToast(`Speech recognition error: ${event.error}`, "error");
+        stopRecording();
+      };
+
+      recognition.onend = () => {
+        if (isRecording) {
+          // Restart recognition if still recording
+          recognition.start();
+        }
+      };
+
+      speechRecognitionRef.current = recognition;
+      recognition.start();
+
+      setIsRecording(true);
+      setRecordingDuration(0);
+      
+      // Dispatch event for recording indicator
+      window.dispatchEvent(new CustomEvent("recording:start"));
+      
+      // Start duration timer
+      durationIntervalRef.current = setInterval(() => {
+        setRecordingDuration((prev: number) => prev + 1);
+      }, 1000);
+
+      showToast("Using free Web Speech API for transcription", "info");
+    } catch (error: any) {
+      console.error("Error starting Web Speech API:", error);
+      showToast(error.message || "Failed to start speech recognition", "error");
+    }
+  }, [isRecording, showToast, postProcessText]);
+
+  /**
    * Initiates audio recording using the browser's MediaRecorder API.
    * 
    * This function sets up the entire recording pipeline:
@@ -158,6 +327,13 @@ export default function DictationPage() {
    * - Falls back gracefully with user-friendly error messages
    */
   const startRecording = useCallback(async () => {
+    // Try Web Speech API first if available (free alternative)
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      return startRecordingWithWebSpeech();
+    }
+
+    // Fallback to MediaRecorder + OpenAI API
     try {
       // Clear previous transcript
       setTranscript("");
@@ -235,7 +411,7 @@ export default function DictationPage() {
       
       showToast(errorMessage, "error");
     }
-  }, [showToast]);
+  }, [showToast, startRecordingWithWebSpeech]);
 
   /**
    * Saves the current transcript to the database and adds it to the history.
@@ -244,6 +420,7 @@ export default function DictationPage() {
    * have completed. It persists the complete transcript to the database and
    * updates the UI to show it in the history section.
    * 
+   * @param contentToSave - Optional content to save. If not provided, uses current transcript state.
    * @returns Promise that resolves when the transcription is saved
    * 
    * Process:
@@ -257,8 +434,9 @@ export default function DictationPage() {
    * - Shows error toast if save fails
    * - Ensures saving state is reset even on error
    */
-  const saveTranscription = useCallback(async () => {
-    if (!transcript.trim()) return;
+  const saveTranscription = useCallback(async (contentToSave?: string) => {
+    const content = contentToSave || transcript;
+    if (!content.trim()) return;
 
     setIsSaving(true);
     try {
@@ -267,7 +445,7 @@ export default function DictationPage() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ content: transcript }),
+        body: JSON.stringify({ content: content.trim() }),
       });
 
       if (!response.ok) {
@@ -290,12 +468,13 @@ export default function DictationPage() {
    * Stops the current recording session and saves the complete transcript.
    * 
    * This function performs cleanup and finalization:
-   * 1. Stops the MediaRecorder instance
-   * 2. Stops all audio tracks to release microphone
-   * 3. Clears the duration timer
-   * 4. Updates UI state to reflect recording stopped
-   * 5. Waits for any pending transcription requests to complete
-   * 6. Automatically saves the complete transcript if not empty
+   * 1. Stops the MediaRecorder instance (if using OpenAI API)
+   * 2. Stops Web Speech API recognition (if using Web Speech API)
+   * 3. Stops all audio tracks to release microphone
+   * 4. Clears the duration timer
+   * 5. Updates UI state to reflect recording stopped
+   * 6. Waits for any pending transcription requests to complete (OpenAI API only)
+   * 7. Automatically saves the complete transcript if not empty
    * 
    * The function uses a polling mechanism to wait for pending transcriptions
    * because multiple 5-second chunks may still be processing when stop is called.
@@ -304,8 +483,15 @@ export default function DictationPage() {
    * @returns Promise that resolves when all cleanup and saving is complete
    */
   const stopRecording = useCallback(async () => {
+    // Stop MediaRecorder if using OpenAI API
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
+    }
+
+    // Stop Web Speech API if using it
+    if (speechRecognitionRef.current) {
+      speechRecognitionRef.current.stop();
+      speechRecognitionRef.current = null;
     }
 
     // Stop all tracks
@@ -325,16 +511,47 @@ export default function DictationPage() {
       durationIntervalRef.current = null;
     }
 
-    // Wait for any pending transcriptions to complete
-    // Then save the complete transcript
+    // Clean up transcript (remove interim results)
+    let finalTranscript = transcript.split("\n").filter((line) => !line.includes("...")).join(" ").trim();
+    
+    // Wait for any pending transcriptions to complete (only for OpenAI API)
+    // Then post-process and save the complete transcript
     const waitForTranscriptions = async () => {
       while (pendingTranscriptionsRef.current > 0) {
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
       
-      // Save transcript if it's not empty
-      if (transcript.trim().length > 0) {
-        await saveTranscription();
+      // Wait for any pending post-processing to complete
+      while (pendingPostProcessingRef.current.size > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      
+      // Get the final cleaned transcript
+      finalTranscript = transcript.split("\n").filter((line) => !line.includes("...")).join(" ").trim();
+      
+      // Post-process the entire final transcript if available
+      if (finalTranscript.length > 0) {
+        try {
+          const response = await fetch("/api/post-process", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ text: finalTranscript }),
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            if (data.improved && data.text) {
+              finalTranscript = data.text;
+            }
+          }
+        } catch (error) {
+          console.error("Error post-processing final transcript:", error);
+          // Keep original transcript if post-processing fails
+        }
+        
+        await saveTranscription(finalTranscript);
       }
     };
 
@@ -500,12 +717,20 @@ export default function DictationPage() {
               ? "Saving transcription..."
               : isTranscribing
               ? "Processing..."
+              : isPostProcessing
+              ? "Improving transcription..."
               : "Click to start recording"}
           </p>
           {isTranscribing && !isRecording && (
             <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
               <span>Transcribing audio...</span>
+            </div>
+          )}
+          {isPostProcessing && !isRecording && (
+            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              <span>Improving transcription with AI...</span>
             </div>
           )}
           {isSaving && (
