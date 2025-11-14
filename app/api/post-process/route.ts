@@ -131,8 +131,30 @@ Improved text:`;
     });
   } catch (error: any) {
     const totalDuration = Date.now() - startTime;
+    
+    // Determine error type and create user-friendly message
+    let errorMessage = "Post-processing failed";
+    let errorType = "unknown";
+    
+    if (error?.status === 401 || error?.code === "invalid_api_key" || error?.message?.includes("API key")) {
+      errorMessage = "Invalid API key provided";
+      errorType = "auth";
+    } else if (error?.code === "insufficient_quota" || error?.message?.includes("quota")) {
+      errorMessage = "API quota exceeded";
+      errorType = "quota";
+    } else if (error?.code === "rate_limit_exceeded" || error?.message?.includes("rate limit")) {
+      errorMessage = "Rate limit exceeded. Please try again later";
+      errorType = "rate_limit";
+    } else if (error?.message?.includes("timeout") || error?.message?.includes("Timeout")) {
+      errorMessage = "Request timed out";
+      errorType = "timeout";
+    } else if (error?.message) {
+      errorMessage = error.message;
+    }
+    
     console.error(`[${requestId}] Post-processing error after ${totalDuration}ms:`, {
-      error: error.message,
+      error: errorMessage,
+      type: errorType,
       status: error?.status,
       code: error?.code,
       stack: error?.stack,
@@ -144,7 +166,8 @@ Improved text:`;
     // The frontend will handle this by keeping the original text
     return NextResponse.json(
       { 
-        error: error.message || "Post-processing failed",
+        error: errorMessage,
+        errorType: errorType,
         improved: false 
       },
       { status: 500 }

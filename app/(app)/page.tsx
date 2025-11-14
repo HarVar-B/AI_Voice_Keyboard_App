@@ -211,7 +211,9 @@ export default function DictationPage() {
       });
 
       if (!response.ok) {
-        throw new Error("Post-processing failed");
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.error || "Post-processing failed";
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
@@ -237,10 +239,26 @@ export default function DictationPage() {
           // If not found, try to replace the text as-is
           return prev.replace(originalText, data.text);
         });
+      } else if (data.improved === false) {
+        // Post-processing was attempted but didn't improve the text
+        console.log("Post-processing completed but text was not improved");
       }
     } catch (error) {
       console.error("Error post-processing text:", error);
-      // Keep original text - no action needed
+      // Inform user about post-processing failure
+      const errorMessage = error instanceof Error ? error.message : "Post-processing failed";
+      let userMessage = "Post-processing failed. Using original transcription.";
+      
+      // Provide more specific error messages
+      if (errorMessage.includes("API key") || errorMessage.includes("401")) {
+        userMessage = "Post-processing unavailable: Invalid API key. Using original transcription.";
+      } else if (errorMessage.includes("network") || errorMessage.includes("fetch")) {
+        userMessage = "Post-processing unavailable: Network error. Using original transcription.";
+      } else if (errorMessage.includes("timeout")) {
+        userMessage = "Post-processing timed out. Using original transcription.";
+      }
+      
+      showToast(userMessage, "info");
     } finally {
       pendingPostProcessingRef.current.delete(textId);
       if (pendingPostProcessingRef.current.size === 0) {
@@ -666,12 +684,36 @@ export default function DictationPage() {
               finalTranscript = data.text;
               finalPostProcessModel = data.model || "gpt-5-nano";
               postProcessingSucceeded = true;
+            } else if (data.improved === false) {
+              // Post-processing was attempted but didn't improve
+              console.log("Final post-processing completed but text was not improved");
+              postProcessingSucceeded = false;
             }
+          } else {
+            // Handle non-OK responses
+            const errorData = await response.json().catch(() => ({}));
+            const errorMessage = errorData.error || "Post-processing failed";
+            throw new Error(errorMessage);
           }
         } catch (error) {
           console.error("Error post-processing final transcript:", error);
           // Post-processing failed - we'll save the original content
           postProcessingSucceeded = false;
+          
+          // Inform user about post-processing failure
+          const errorMessage = error instanceof Error ? error.message : "Post-processing failed";
+          let userMessage = "Post-processing failed. Saving original transcription.";
+          
+          // Provide more specific error messages
+          if (errorMessage.includes("API key") || errorMessage.includes("401")) {
+            userMessage = "Post-processing unavailable: Invalid API key. Saving original transcription.";
+          } else if (errorMessage.includes("network") || errorMessage.includes("fetch")) {
+            userMessage = "Post-processing unavailable: Network error. Saving original transcription.";
+          } else if (errorMessage.includes("timeout")) {
+            userMessage = "Post-processing timed out. Saving original transcription.";
+          }
+          
+          showToast(userMessage, "info");
         }
         
         // Save with all metadata
