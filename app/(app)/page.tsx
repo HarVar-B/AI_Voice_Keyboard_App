@@ -16,15 +16,22 @@ import {
 interface Transcription {
   id: string;
   content: string;
+  originalContent?: string | null;
+  transcriptionSource: string;
+  postProcessed: boolean;
+  postProcessingModel?: string | null;
   createdAt: string;
 }
 
 export default function DictationPage() {
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
+  const [originalTranscript, setOriginalTranscript] = useState(""); // Original before post-processing
+  const [transcriptionSource, setTranscriptionSource] = useState<string>("unknown"); // Current transcription source
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPostProcessing, setIsPostProcessing] = useState(false);
+  const [postProcessingModel, setPostProcessingModel] = useState<string | null>(null); // Model used for post-processing
   const [transcriptions, setTranscriptions] = useState<Transcription[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -158,8 +165,12 @@ export default function DictationPage() {
         const data = await response.json();
         const text = data.text;
 
-        // Append to transcript
+        // Append to transcript and track original content
         setTranscript((prev) => {
+          const newText = prev ? `${prev} ${text}` : text;
+          return newText;
+        });
+        setOriginalTranscript((prev) => {
           const newText = prev ? `${prev} ${text}` : text;
           return newText;
         });
@@ -206,6 +217,13 @@ export default function DictationPage() {
       const data = await response.json();
       
       if (data.improved && data.text && data.text !== originalText) {
+        // Track post-processing model if available
+        if (data.model) {
+          setPostProcessingModel(data.model);
+        } else {
+          setPostProcessingModel("gpt-5-nano"); // Default model
+        }
+        
         // Replace the original text with improved version
         setTranscript((prev) => {
           const prevFinal = prev.split("\n").filter((line) => !line.includes("...")).join(" ");
@@ -243,8 +261,11 @@ export default function DictationPage() {
         throw new Error("Web Speech API not supported in this browser. Please use Chrome or Edge.");
       }
 
-      // Clear previous transcript
+      // Clear previous transcript and set source
       setTranscript("");
+      setOriginalTranscript("");
+      setTranscriptionSource("web-speech-api");
+      setPostProcessingModel(null);
       
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
@@ -281,6 +302,11 @@ export default function DictationPage() {
           // Remove previous interim results and add new ones
           const prevFinal = prev.split("\n").filter((line) => !line.includes("...")).join(" ");
           const newText = prevFinal + finalTranscript + (interimTranscript ? `\n${interimTranscript}...` : "");
+          // Track original content (before post-processing)
+          setOriginalTranscript((prevOriginal) => {
+            const originalFinal = prevOriginal.split("\n").filter((line) => !line.includes("...")).join(" ");
+            return originalFinal + finalTranscript;
+          });
           return newText;
         });
 
@@ -392,8 +418,11 @@ export default function DictationPage() {
    */
   const startRecordingWithWhisper = useCallback(async () => {
     try {
-      // Clear previous transcript
+      // Clear previous transcript and set source
       setTranscript("");
+      setOriginalTranscript("");
+      setTranscriptionSource("whisper-1");
+      setPostProcessingModel(null);
       
       // Check if MediaRecorder is supported
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -506,9 +535,13 @@ export default function DictationPage() {
    * - Ensures saving state is reset even on error
    */
   const saveTranscription = useCallback(async (contentToSave?: string) => {
-    const content = contentToSave || transcript;
-    if (!content.trim()) return;
+    const finalContent = contentToSave || transcript;
+    if (!finalContent.trim()) return;
 
+    // Get original content (before post-processing) or use final content if no post-processing
+    const originalContent = originalTranscript.trim() || finalContent.trim();
+    const wasPostProcessed = postProcessingModel !== null && finalContent.trim() !== originalContent;
+    
     setIsSaving(true);
     try {
       const response = await fetch("/api/transcriptions", {
@@ -516,7 +549,13 @@ export default function DictationPage() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ content: content.trim() }),
+        body: JSON.stringify({
+          content: finalContent.trim(),
+          originalContent: originalContent !== finalContent.trim() ? originalContent : null,
+          transcriptionSource: transcriptionSource,
+          postProcessed: wasPostProcessed,
+          postProcessingModel: wasPostProcessed ? postProcessingModel : null,
+        }),
       });
 
       if (!response.ok) {
@@ -526,6 +565,8 @@ export default function DictationPage() {
       const data = await response.json();
       setTranscriptions((prev) => [data.transcription, ...prev]);
       setTranscript("");
+      setOriginalTranscript("");
+      setPostProcessingModel(null);
       showToast("Transcription saved!", "success");
     } catch (error) {
       console.error("Error saving transcription:", error);
@@ -533,7 +574,7 @@ export default function DictationPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [transcript, showToast]);
+  }, [transcript, originalTranscript, transcriptionSource, postProcessingModel, showToast]);
 
   /**
    * Stops the current recording session and saves the complete transcript.
@@ -599,8 +640,10 @@ export default function DictationPage() {
       
       // Get the final cleaned transcript
       finalTranscript = transcript.split("\n").filter((line) => !line.includes("...")).join(" ").trim();
+      let originalBeforeFinalPostProcess = originalTranscript.split("\n").filter((line) => !line.includes("...")).join(" ").trim() || finalTranscript;
       
       // Post-process the entire final transcript if available
+      let finalPostProcessModel = postProcessingModel;
       if (finalTranscript.length > 0) {
         try {
           const response = await fetch("/api/post-process", {
@@ -614,7 +657,10 @@ export default function DictationPage() {
           if (response.ok) {
             const data = await response.json();
             if (data.improved && data.text) {
+              // Store original before final post-processing
+              originalBeforeFinalPostProcess = finalTranscript;
               finalTranscript = data.text;
+              finalPostProcessModel = data.model || "gpt-5-nano";
             }
           }
         } catch (error) {
@@ -622,12 +668,21 @@ export default function DictationPage() {
           // Keep original transcript if post-processing fails
         }
         
+        // Save with all metadata - use saveTranscription which handles metadata
+        // Temporarily update state for saveTranscription to use
+        const currentOriginal = originalTranscript;
+        const currentModel = postProcessingModel;
+        setOriginalTranscript(originalBeforeFinalPostProcess);
+        setPostProcessingModel(finalPostProcessModel);
         await saveTranscription(finalTranscript);
+        // Restore if needed (though saveTranscription clears them)
+        setOriginalTranscript("");
+        setPostProcessingModel(null);
       }
     };
 
     waitForTranscriptions();
-  }, [transcript, saveTranscription]);
+  }, [transcript, originalTranscript, transcriptionSource, postProcessingModel, saveTranscription]);
 
   // Keyboard shortcuts
   useEffect(() => {

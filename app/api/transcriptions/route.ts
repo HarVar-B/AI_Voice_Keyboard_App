@@ -101,7 +101,13 @@ export async function POST(request: NextRequest) {
 
     console.log(`[${requestId}] User authenticated: ${user.email}`);
 
-    const { content } = await request.json();
+    const { 
+      content, 
+      originalContent, 
+      transcriptionSource = "unknown", 
+      postProcessed = false, 
+      postProcessingModel 
+    } = await request.json();
 
     if (!content || typeof content !== "string" || content.trim().length === 0) {
       console.log(`[${requestId}] Error: Invalid or empty content provided`);
@@ -112,12 +118,20 @@ export async function POST(request: NextRequest) {
     }
 
     const contentLength = content.trim().length;
+    const originalLength = originalContent ? originalContent.trim().length : 0;
     console.log(`[${requestId}] Saving transcription with content length: ${contentLength} characters`);
+    console.log(`[${requestId}] Original content length: ${originalLength} characters`);
+    console.log(`[${requestId}] Transcription source: ${transcriptionSource}`);
+    console.log(`[${requestId}] Post-processed: ${postProcessed}, Model: ${postProcessingModel || "none"}`);
 
     const dbStartTime = Date.now();
     const transcription = await prisma.transcription.create({
       data: {
         content: content.trim(),
+        originalContent: originalContent && originalContent.trim() !== content.trim() ? originalContent.trim() : null,
+        transcriptionSource: transcriptionSource,
+        postProcessed: postProcessed,
+        postProcessingModel: postProcessed && postProcessingModel ? postProcessingModel : null,
         userId: user.id,
       },
     });

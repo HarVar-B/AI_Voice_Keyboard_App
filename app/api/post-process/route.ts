@@ -127,6 +127,7 @@ Improved text:`;
     return NextResponse.json({
       text: improvedText,
       improved: true,
+      model: "gpt-5-nano", // Return the model used
     });
   } catch (error: any) {
     const totalDuration = Date.now() - startTime;
