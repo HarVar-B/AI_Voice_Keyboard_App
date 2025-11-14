@@ -640,10 +640,14 @@ export default function DictationPage() {
       
       // Get the final cleaned transcript
       finalTranscript = transcript.split("\n").filter((line) => !line.includes("...")).join(" ").trim();
+      // Store original content BEFORE attempting post-processing
+      // This ensures we always have the original if post-processing fails
       let originalBeforeFinalPostProcess = originalTranscript.split("\n").filter((line) => !line.includes("...")).join(" ").trim() || finalTranscript;
       
       // Post-process the entire final transcript if available
       let finalPostProcessModel = postProcessingModel;
+      let postProcessingSucceeded = false;
+      
       if (finalTranscript.length > 0) {
         try {
           const response = await fetch("/api/post-process", {
@@ -661,28 +665,63 @@ export default function DictationPage() {
               originalBeforeFinalPostProcess = finalTranscript;
               finalTranscript = data.text;
               finalPostProcessModel = data.model || "gpt-5-nano";
+              postProcessingSucceeded = true;
             }
           }
         } catch (error) {
           console.error("Error post-processing final transcript:", error);
-          // Keep original transcript if post-processing fails
+          // Post-processing failed - we'll save the original content
+          postProcessingSucceeded = false;
         }
         
-        // Save with all metadata - use saveTranscription which handles metadata
-        // Temporarily update state for saveTranscription to use
-        const currentOriginal = originalTranscript;
-        const currentModel = postProcessingModel;
-        setOriginalTranscript(originalBeforeFinalPostProcess);
-        setPostProcessingModel(finalPostProcessModel);
-        await saveTranscription(finalTranscript);
-        // Restore if needed (though saveTranscription clears them)
-        setOriginalTranscript("");
-        setPostProcessingModel(null);
+        // Save with all metadata
+        // Always preserve original content - if post-processing failed, we still want to save the original
+        const contentToSave = finalTranscript;
+        // Save original content if it's different from final content, or if post-processing was attempted
+        // This ensures we preserve the original transcription even if post-processing fails
+        const originalContentToSave = originalBeforeFinalPostProcess !== contentToSave 
+          ? originalBeforeFinalPostProcess 
+          : null;
+        
+        const wasPostProcessed = postProcessingSucceeded && finalPostProcessModel !== null;
+        
+        setIsSaving(true);
+        try {
+          const response = await fetch("/api/transcriptions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              content: contentToSave,
+              originalContent: originalContentToSave,
+              transcriptionSource: transcriptionSource,
+              postProcessed: wasPostProcessed,
+              postProcessingModel: wasPostProcessed ? finalPostProcessModel : null,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error("Failed to save transcription");
+          }
+
+          const data = await response.json();
+          setTranscriptions((prev) => [data.transcription, ...prev]);
+          setTranscript("");
+          setOriginalTranscript("");
+          setPostProcessingModel(null);
+          showToast("Transcription saved!", "success");
+        } catch (error) {
+          console.error("Error saving transcription:", error);
+          showToast("Failed to save transcription", "error");
+        } finally {
+          setIsSaving(false);
+        }
       }
     };
 
     waitForTranscriptions();
-  }, [transcript, originalTranscript, transcriptionSource, postProcessingModel, saveTranscription]);
+  }, [transcript, originalTranscript, transcriptionSource, postProcessingModel, showToast]);
 
   // Keyboard shortcuts
   useEffect(() => {
