@@ -27,23 +27,34 @@ const openai = new OpenAI({
  * have access to Whisper, returns available: false.
  */
 export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+  const requestId = `check-whisper-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
   try {
+    console.log(`[${requestId}] GET /api/check-whisper - Starting Whisper availability check`);
+    
     const { user } = await validateRequest();
 
     if (!user) {
+      console.log(`[${requestId}] Authentication failed - No user found`);
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }
       );
     }
 
+    console.log(`[${requestId}] User authenticated: ${user.email}`);
+
     // Check if OpenAI API key is configured
     if (!process.env.OPENAI_API_KEY) {
+      console.log(`[${requestId}] No OpenAI API key configured`);
       return NextResponse.json({
         available: false,
         reason: "No API key configured",
       });
     }
+
+    console.log(`[${requestId}] OpenAI API key found, creating test audio file`);
 
     // Create a minimal test audio file (silence WAV file)
     // This is a minimal valid WAV file header + 1 sample of silence
@@ -56,9 +67,11 @@ export async function GET(request: NextRequest) {
     });
 
     try {
+      console.log(`[${requestId}] Attempting to call Whisper API with test audio`);
       // Attempt to call Whisper API with minimal audio
       // This will fail quickly if the API key doesn't have access to Whisper-1
       // We use a timeout to avoid waiting too long
+      const whisperStartTime = Date.now();
       const transcriptionPromise = openai.audio.transcriptions.create({
         model: "whisper-1",
         file: testFile,
@@ -71,15 +84,26 @@ export async function GET(request: NextRequest) {
       });
 
       await Promise.race([transcriptionPromise, timeoutPromise]);
+      const whisperDuration = Date.now() - whisperStartTime;
 
       // If we get here, Whisper-1 is accessible
+      const totalDuration = Date.now() - startTime;
+      console.log(`[${requestId}] Whisper-1 is available (check completed in ${whisperDuration}ms, total: ${totalDuration}ms)`);
       return NextResponse.json({
         available: true,
         model: "whisper-1",
       });
     } catch (error: any) {
+      const checkDuration = Date.now() - startTime;
+      console.log(`[${requestId}] Whisper API check failed after ${checkDuration}ms:`, {
+        error: error.message,
+        status: error?.status,
+        code: error?.code,
+      });
+      
       // Check specific error codes
       if (error?.status === 401 || error?.code === "invalid_api_key") {
+        console.log(`[${requestId}] Invalid API key detected`);
         return NextResponse.json({
           available: false,
           reason: "Invalid API key",
@@ -88,7 +112,8 @@ export async function GET(request: NextRequest) {
 
       if (error?.status === 429 || error?.code === "insufficient_quota") {
         // Quota exceeded, but API key is valid
-      return NextResponse.json({
+        console.log(`[${requestId}] Quota exceeded but API key is valid`);
+        return NextResponse.json({
           available: true,
           model: "whisper-1",
           warning: "Quota exceeded, but API key is valid",
@@ -96,6 +121,7 @@ export async function GET(request: NextRequest) {
       }
 
       if (error?.message?.includes("model") || error?.message?.includes("whisper")) {
+        console.log(`[${requestId}] Whisper-1 model not accessible`);
         return NextResponse.json({
           available: false,
           reason: "Whisper-1 model not accessible",
@@ -103,13 +129,18 @@ export async function GET(request: NextRequest) {
       }
 
       // For other errors, assume not available
+      console.log(`[${requestId}] Unknown error: ${error?.message || "Unknown error"}`);
       return NextResponse.json({
         available: false,
         reason: error?.message || "Unknown error",
       });
     }
   } catch (error: any) {
-    console.error("Error checking Whisper availability:", error);
+    const totalDuration = Date.now() - startTime;
+    console.error(`[${requestId}] Error checking Whisper availability after ${totalDuration}ms:`, {
+      error: error.message,
+      stack: error?.stack,
+    });
     return NextResponse.json(
       {
         available: false,

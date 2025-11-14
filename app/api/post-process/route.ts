@@ -32,27 +32,40 @@ const openai = new OpenAI({
  * This ensures the app continues to work even without OpenAI subscription.
  */
 export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  const requestId = `post-process-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
   try {
+    console.log(`[${requestId}] POST /api/post-process - Starting post-processing request`);
+    
     const { user } = await validateRequest();
 
     if (!user) {
+      console.log(`[${requestId}] Authentication failed - No user found`);
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }
       );
     }
 
+    console.log(`[${requestId}] User authenticated: ${user.email}`);
+
     const { text } = await request.json();
 
     if (!text || typeof text !== "string" || text.trim().length === 0) {
+      console.log(`[${requestId}] Error: Invalid or empty text provided`);
       return NextResponse.json(
         { error: "Text is required" },
         { status: 400 }
       );
     }
 
+    const textLength = text.trim().length;
+    console.log(`[${requestId}] Processing text of length: ${textLength} characters`);
+
     // Check if OpenAI API key is available
     if (!process.env.OPENAI_API_KEY) {
+      console.log(`[${requestId}] No OpenAI API key configured, returning original text`);
       // Return original text if no API key
       return NextResponse.json({
         text: text.trim(),
@@ -61,10 +74,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Fetch user's custom dictionary words
+    const dictStartTime = Date.now();
     const dictionaryWords = await prisma.dictionaryWord.findMany({
       where: { userId: user.id },
       select: { word: true },
     });
+    console.log(`[${requestId}] Fetched ${dictionaryWords.length} dictionary words in ${Date.now() - dictStartTime}ms`);
 
     // Create prompt with custom words
     const dictionaryContext = dictionaryWords.length > 0
@@ -78,7 +93,11 @@ ${text.trim()}
 
 Improved text:`;
 
+    const maxTokens = Math.ceil(text.length * 1.5);
+    console.log(`[${requestId}] Calling GPT-5-nano API with max_tokens: ${maxTokens}`);
+
     // Call OpenAI GPT API
+    const gptStartTime = Date.now();
     const completion = await openai.chat.completions.create({
       model: "gpt-5-nano", // Using GPT-5-nano for ultra-low latency and cost efficiency
       messages: [
@@ -92,17 +111,31 @@ Improved text:`;
         },
       ],
       temperature: 0.3, // Lower temperature for more consistent results
-      max_tokens: Math.ceil(text.length * 1.5), // Allow some expansion
+      max_tokens: maxTokens, // Allow some expansion
     });
 
+    const gptDuration = Date.now() - gptStartTime;
     const improvedText = completion.choices[0]?.message?.content?.trim() || text.trim();
+    const improvedLength = improvedText.length;
+    
+    console.log(`[${requestId}] GPT-5-nano API completed in ${gptDuration}ms`);
+    console.log(`[${requestId}] Text improved: ${textLength} -> ${improvedLength} characters (${improvedLength - textLength > 0 ? '+' : ''}${improvedLength - textLength})`);
+
+    const totalDuration = Date.now() - startTime;
+    console.log(`[${requestId}] Post-processing request completed successfully in ${totalDuration}ms`);
 
     return NextResponse.json({
       text: improvedText,
       improved: true,
     });
   } catch (error: any) {
-    console.error("Post-processing error:", error);
+    const totalDuration = Date.now() - startTime;
+    console.error(`[${requestId}] Post-processing error after ${totalDuration}ms:`, {
+      error: error.message,
+      status: error?.status,
+      code: error?.code,
+      stack: error?.stack,
+    });
     
     // Always return the original text if processing fails
     // This ensures the app continues to work without OpenAI

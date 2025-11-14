@@ -44,42 +44,61 @@ const openai = new OpenAI({
  * This is especially useful for technical terms, brand names, and proper nouns.
  */
 export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  const requestId = `transcribe-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
   try {
+    console.log(`[${requestId}] POST /api/transcribe - Starting transcription request`);
+    
     const { user } = await validateRequest();
 
     if (!user) {
+      console.log(`[${requestId}] Authentication failed - No user found`);
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }
       );
     }
 
+    console.log(`[${requestId}] User authenticated: ${user.email}`);
+
     // Get the audio file from FormData
     const formData = await request.formData();
     const audioFile = formData.get("audio") as File;
 
     if (!audioFile) {
+      console.log(`[${requestId}] Error: No audio file provided`);
       return NextResponse.json(
         { error: "No audio file provided" },
         { status: 400 }
       );
     }
 
+    console.log(`[${requestId}] Audio file received: ${audioFile.name}, size: ${audioFile.size} bytes, type: ${audioFile.type}`);
+
     // Fetch user's custom dictionary words
+    const dictStartTime = Date.now();
     const dictionaryWords = await prisma.dictionaryWord.findMany({
       where: { userId: user.id },
       select: { word: true },
     });
+    console.log(`[${requestId}] Fetched ${dictionaryWords.length} dictionary words in ${Date.now() - dictStartTime}ms`);
 
     // Create prompt with custom words
     const customWordsPrompt = dictionaryWords.length > 0
-      ? `Use these spellings: ${dictionaryWords.map((d) => d.word).join(", ")}.`
+      ? `Use these spellings: ${dictionaryWords.map((d: { word: string }) => d.word).join(", ")}.`
       : "";
+    
+    if (dictionaryWords.length > 0) {
+      console.log(`[${requestId}] Using custom dictionary words: ${dictionaryWords.map((d: { word: string }) => d.word).join(", ")}`);
+    }
 
     // Convert File to a format OpenAI can use
     // OpenAI SDK accepts File, Blob, or a stream
+    const convertStartTime = Date.now();
     const arrayBuffer = await audioFile.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+    console.log(`[${requestId}] Converted audio file to buffer in ${Date.now() - convertStartTime}ms`);
 
     // Create a File object for OpenAI (works in Node.js 18+)
     // For compatibility, we'll use the File constructor with the buffer
@@ -88,21 +107,35 @@ export async function POST(request: NextRequest) {
     });
 
     // Call Whisper API
+    console.log(`[${requestId}] Calling Whisper API with model: whisper-1`);
+    const whisperStartTime = Date.now();
     const transcription = await openai.audio.transcriptions.create({
       model: "whisper-1",
       file: file,
       prompt: customWordsPrompt || undefined,
       language: "en", // Optional: specify language for better accuracy
     });
+    const whisperDuration = Date.now() - whisperStartTime;
+    console.log(`[${requestId}] Whisper API completed in ${whisperDuration}ms, transcribed text length: ${transcription.text.length} characters`);
+
+    const totalDuration = Date.now() - startTime;
+    console.log(`[${requestId}] Transcription request completed successfully in ${totalDuration}ms`);
 
     return NextResponse.json({
       text: transcription.text,
     });
   } catch (error: any) {
-    console.error("Transcription error:", error);
+    const totalDuration = Date.now() - startTime;
+    console.error(`[${requestId}] Transcription error after ${totalDuration}ms:`, {
+      error: error.message,
+      status: error?.status,
+      code: error?.code,
+      stack: error?.stack,
+    });
     
     // Handle OpenAI API errors
     if (error?.status === 429 || error?.code === "insufficient_quota") {
+      console.log(`[${requestId}] OpenAI API quota exceeded`);
       return NextResponse.json(
         { 
           error: "OpenAI API quota exceeded. Please check your OpenAI account billing and plan details.",
@@ -113,6 +146,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (error?.status === 401) {
+      console.log(`[${requestId}] Invalid OpenAI API key`);
       return NextResponse.json(
         { 
           error: "Invalid OpenAI API key. Please check your API key configuration.",
@@ -123,12 +157,14 @@ export async function POST(request: NextRequest) {
     }
 
     if (error?.message) {
+      console.log(`[${requestId}] Error with message: ${error.message}`);
       return NextResponse.json(
         { error: error.message || "Transcription failed" },
         { status: error.status || 500 }
       );
     }
 
+    console.log(`[${requestId}] Unknown error occurred`);
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }
