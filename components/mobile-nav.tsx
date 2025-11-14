@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import ThemeToggle from "@/components/theme-toggle";
 
 export default function MobileNav() {
   const [isOpen, setIsOpen] = useState(false);
@@ -92,12 +91,6 @@ export default function MobileNav() {
                   </Link>
                 );
               })}
-              <div className="pt-2 border-t">
-                <div className="flex items-center justify-between px-4 py-2">
-                  <span className="text-sm font-medium text-muted-foreground">Theme</span>
-                  <ThemeToggle />
-                </div>
-              </div>
             </div>
           </nav>
         </>

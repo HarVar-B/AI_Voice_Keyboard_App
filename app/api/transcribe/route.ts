@@ -5,10 +5,6 @@ import OpenAI from "openai";
 
 export const runtime = "nodejs";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 /**
  * POST /api/transcribe
  * 
@@ -65,6 +61,25 @@ export async function POST(request: NextRequest) {
     // Get the audio file from FormData
     const formData = await request.formData();
     const audioFile = formData.get("audio") as File;
+    const clientApiKey = formData.get("openaiApiKey") as string | null;
+    
+    // Use client-provided API key if available, otherwise fall back to server's key
+    const apiKeyToUse = clientApiKey || process.env.OPENAI_API_KEY;
+    
+    if (!apiKeyToUse) {
+      console.log(`[${requestId}] No OpenAI API key available (neither client nor server)`);
+      return NextResponse.json(
+        { error: "No OpenAI API key configured" },
+        { status: 500 }
+      );
+    }
+    
+    // Create OpenAI client with the appropriate API key
+    const openai = new OpenAI({
+      apiKey: apiKeyToUse,
+    });
+    
+    console.log(`[${requestId}] Using ${clientApiKey ? 'client-provided' : 'server'} API key`);
 
     if (!audioFile) {
       console.log(`[${requestId}] Error: No audio file provided`);

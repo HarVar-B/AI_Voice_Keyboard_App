@@ -5,10 +5,6 @@ import OpenAI from "openai";
 
 export const runtime = "nodejs";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 /**
  * POST /api/post-process
  * 
@@ -67,7 +63,23 @@ export async function POST(request: NextRequest) {
 
     console.log(`[${requestId}] User authenticated: ${user.email}`);
 
-    const { text } = await request.json();
+    const { text, openaiApiKey: clientApiKey } = await request.json();
+    
+    // Use client-provided API key if available, otherwise fall back to server's key
+    const apiKeyToUse = clientApiKey || process.env.OPENAI_API_KEY;
+    
+    if (!apiKeyToUse) {
+      console.log(`[${requestId}] No OpenAI API key available (neither client nor server), returning original text`);
+      return NextResponse.json({
+        text: text.trim(),
+        improved: false,
+      });
+    }
+    
+    // Create OpenAI client with the appropriate API key
+    const openai = new OpenAI({
+      apiKey: apiKeyToUse,
+    });
 
     if (!text || typeof text !== "string" || text.trim().length === 0) {
       console.log(`[${requestId}] Error: Invalid or empty text provided`);
@@ -79,16 +91,7 @@ export async function POST(request: NextRequest) {
 
     const textLength = text.trim().length;
     console.log(`[${requestId}] Processing text of length: ${textLength} characters`);
-
-    // Check if OpenAI API key is available
-    if (!process.env.OPENAI_API_KEY) {
-      console.log(`[${requestId}] No OpenAI API key configured, returning original text`);
-      // Return original text if no API key
-      return NextResponse.json({
-        text: text.trim(),
-        improved: false,
-      });
-    }
+    console.log(`[${requestId}] Using ${clientApiKey ? 'client-provided' : 'server'} API key`);
 
     // Fetch user's custom dictionary words
     const dictStartTime = Date.now();

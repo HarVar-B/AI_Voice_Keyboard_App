@@ -4,10 +4,6 @@ import OpenAI from "openai";
 
 export const runtime = "nodejs";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 /**
  * GET /api/check-whisper
  * 
@@ -45,14 +41,27 @@ export async function GET(request: NextRequest) {
 
     console.log(`[${requestId}] User authenticated: ${user.email}`);
 
-    // Check if OpenAI API key is configured
-    if (!process.env.OPENAI_API_KEY) {
-      console.log(`[${requestId}] No OpenAI API key configured`);
+    // Get client-provided API key from query parameter if available
+    const { searchParams } = new URL(request.url);
+    const clientApiKey = searchParams.get("openaiApiKey");
+    
+    // Use client-provided API key if available, otherwise fall back to server's key
+    const apiKeyToUse = clientApiKey || process.env.OPENAI_API_KEY;
+    
+    if (!apiKeyToUse) {
+      console.log(`[${requestId}] No OpenAI API key available (neither client nor server)`);
       return NextResponse.json({
         available: false,
         reason: "No API key configured",
       });
     }
+    
+    // Create OpenAI client with the appropriate API key
+    const openai = new OpenAI({
+      apiKey: apiKeyToUse,
+    });
+    
+    console.log(`[${requestId}] Using ${clientApiKey ? 'client-provided' : 'server'} API key`);
 
     console.log(`[${requestId}] OpenAI API key found, creating test audio file`);
 
