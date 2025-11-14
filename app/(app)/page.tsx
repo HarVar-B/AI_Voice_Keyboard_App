@@ -213,7 +213,11 @@ export default function DictationPage() {
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         const errorMessage = errorData.error || "Post-processing failed";
-        throw new Error(errorMessage);
+        const errorType = errorData.errorType || "unknown";
+        // Attach error type to error object for better handling
+        const error = new Error(errorMessage);
+        (error as any).errorType = errorType;
+        throw error;
       }
 
       const data = await response.json();
@@ -247,15 +251,20 @@ export default function DictationPage() {
       console.error("Error post-processing text:", error);
       // Inform user about post-processing failure
       const errorMessage = error instanceof Error ? error.message : "Post-processing failed";
+      const errorType = (error as any)?.errorType;
       let userMessage = "Post-processing failed. Using original transcription.";
       
-      // Provide more specific error messages
-      if (errorMessage.includes("API key") || errorMessage.includes("401")) {
+      // Provide more specific error messages based on error type
+      if (errorType === "auth" || errorMessage.includes("API key") || errorMessage.includes("401")) {
         userMessage = "Post-processing unavailable: Invalid API key. Using original transcription.";
+      } else if (errorType === "quota" || errorMessage.includes("quota")) {
+        userMessage = "Post-processing unavailable: API quota exceeded. Using original transcription.";
+      } else if (errorType === "rate_limit" || errorMessage.includes("rate limit")) {
+        userMessage = "Post-processing unavailable: Rate limit exceeded. Using original transcription.";
+      } else if (errorType === "timeout" || errorMessage.includes("timeout")) {
+        userMessage = "Post-processing timed out. Using original transcription.";
       } else if (errorMessage.includes("network") || errorMessage.includes("fetch")) {
         userMessage = "Post-processing unavailable: Network error. Using original transcription.";
-      } else if (errorMessage.includes("timeout")) {
-        userMessage = "Post-processing timed out. Using original transcription.";
       }
       
       showToast(userMessage, "info");
@@ -693,7 +702,10 @@ export default function DictationPage() {
             // Handle non-OK responses
             const errorData = await response.json().catch(() => ({}));
             const errorMessage = errorData.error || "Post-processing failed";
-            throw new Error(errorMessage);
+            const errorType = errorData.errorType || "unknown";
+            const error = new Error(errorMessage);
+            (error as any).errorType = errorType;
+            throw error;
           }
         } catch (error) {
           console.error("Error post-processing final transcript:", error);
@@ -702,15 +714,20 @@ export default function DictationPage() {
           
           // Inform user about post-processing failure
           const errorMessage = error instanceof Error ? error.message : "Post-processing failed";
+          const errorType = (error as any)?.errorType;
           let userMessage = "Post-processing failed. Saving original transcription.";
           
-          // Provide more specific error messages
-          if (errorMessage.includes("API key") || errorMessage.includes("401")) {
+          // Provide more specific error messages based on error type
+          if (errorType === "auth" || errorMessage.includes("API key") || errorMessage.includes("401")) {
             userMessage = "Post-processing unavailable: Invalid API key. Saving original transcription.";
+          } else if (errorType === "quota" || errorMessage.includes("quota")) {
+            userMessage = "Post-processing unavailable: API quota exceeded. Saving original transcription.";
+          } else if (errorType === "rate_limit" || errorMessage.includes("rate limit")) {
+            userMessage = "Post-processing unavailable: Rate limit exceeded. Saving original transcription.";
+          } else if (errorType === "timeout" || errorMessage.includes("timeout")) {
+            userMessage = "Post-processing timed out. Saving original transcription.";
           } else if (errorMessage.includes("network") || errorMessage.includes("fetch")) {
             userMessage = "Post-processing unavailable: Network error. Saving original transcription.";
-          } else if (errorMessage.includes("timeout")) {
-            userMessage = "Post-processing timed out. Saving original transcription.";
           }
           
           showToast(userMessage, "info");
