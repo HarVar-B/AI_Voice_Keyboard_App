@@ -16,6 +16,18 @@ const openai = new OpenAI({
  * punctuation, and accuracy. Uses the user's custom dictionary to ensure
  * technical terms are spelled correctly.
  * 
+ * Model Selection:
+ * The endpoint automatically detects and uses the first available text-to-text
+ * model supported by the provided OpenAI API key. It tries models in this order:
+ * 1. gpt-5-nano (preferred - ultra-low latency)
+ * 2. gpt-4o-mini (fallback - fast and cost-effective)
+ * 3. gpt-4o (fallback - high quality)
+ * 4. gpt-4-turbo (fallback - good quality)
+ * 5. gpt-3.5-turbo (fallback - widely available)
+ * 
+ * This ensures the application works with any OpenAI API key that has access
+ * to at least one text-to-text model, not just gpt-5-nano.
+ * 
  * @param request - NextRequest containing JSON body with transcription text
  * @returns JSON response with improved text or original text if processing fails
  * 
@@ -23,12 +35,17 @@ const openai = new OpenAI({
  * - text: string (required) - The transcription text to improve
  * 
  * Returns:
- * - 200: Success with improved text
+ * - 200: Success with improved text and model name used
  * - 400: Invalid or missing text
  * - 401: Unauthorized (user not authenticated)
  * - 500: Internal server error (falls back to original text)
  * 
- * If OpenAI API is not available or fails, returns the original text.
+ * Response includes:
+ * - text: Improved transcription text
+ * - improved: boolean indicating if processing succeeded
+ * - model: Name of the model used (e.g., "gpt-5-nano", "gpt-4o-mini")
+ * 
+ * If OpenAI API is not available or all models fail, returns the original text.
  * This ensures the app continues to work even without OpenAI subscription.
  */
 export async function POST(request: NextRequest) {
@@ -83,7 +100,7 @@ export async function POST(request: NextRequest) {
 
     // Create prompt with custom words
     const dictionaryContext = dictionaryWords.length > 0
-      ? `\n\nImportant: Use these exact spellings when they appear: ${dictionaryWords.map((d) => d.word).join(", ")}.`
+      ? `\n\nImportant: Use these exact spellings when they appear: ${dictionaryWords.map((d: { word: string }) => d.word).join(", ")}.`
       : "";
 
     const prompt = `Please improve the following transcription text. Fix grammar, punctuation, capitalization, and spelling errors. Make it more readable and natural while preserving the original meaning and technical terms.${dictionaryContext}
@@ -94,32 +111,70 @@ ${text.trim()}
 Improved text:`;
 
     const maxTokens = Math.ceil(text.length * 1.5);
-    console.log(`[${requestId}] Calling GPT-5-nano API with max_tokens: ${maxTokens}`);
-
-    // Call OpenAI GPT API
-    const gptStartTime = Date.now();
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5-nano", // Using GPT-5-nano for ultra-low latency and cost efficiency
-      messages: [
-        {
-          role: "system",
-          content: "You are a helpful assistant that improves transcription quality. Fix grammar, punctuation, and spelling while preserving the original meaning and technical terms.",
-        },
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      temperature: 0.3, // Lower temperature for more consistent results
-      max_tokens: maxTokens, // Allow some expansion
-    });
-
-    const gptDuration = Date.now() - gptStartTime;
-    const improvedText = completion.choices[0]?.message?.content?.trim() || text.trim();
-    const improvedLength = improvedText.length;
     
-    console.log(`[${requestId}] GPT-5-nano API completed in ${gptDuration}ms`);
-    console.log(`[${requestId}] Text improved: ${textLength} -> ${improvedLength} characters (${improvedLength - textLength > 0 ? '+' : ''}${improvedLength - textLength})`);
+    // Try multiple models in order of preference
+    // The application will use the first available text-to-text model supported by the API key
+    // This allows flexibility - if gpt-5-nano is not available, it will try other models
+    const modelsToTry = [
+      "gpt-5-nano",      // Preferred: ultra-low latency and cost efficient
+      "gpt-4o-mini",     // Fallback: fast and cost-effective
+      "gpt-4o",          // Fallback: high quality
+      "gpt-4-turbo",     // Fallback: good quality
+      "gpt-3.5-turbo",   // Fallback: widely available
+    ];
+
+    let lastError: any = null;
+    let usedModel: string | null = null;
+    let improvedText: string = text.trim();
+
+    // Try each model until one succeeds
+    for (const model of modelsToTry) {
+      try {
+        console.log(`[${requestId}] Attempting to use model: ${model} with max_tokens: ${maxTokens}`);
+        const gptStartTime = Date.now();
+        
+        const completion = await openai.chat.completions.create({
+          model: model,
+          messages: [
+            {
+              role: "system",
+              content: "You are a helpful assistant that improves transcription quality. Fix grammar, punctuation, and spelling while preserving the original meaning and technical terms.",
+            },
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+          temperature: 0.3, // Lower temperature for more consistent results
+          max_tokens: maxTokens, // Allow some expansion
+        });
+
+        const gptDuration = Date.now() - gptStartTime;
+        improvedText = completion.choices[0]?.message?.content?.trim() || text.trim();
+        usedModel = model;
+        
+        console.log(`[${requestId}] ${model} API completed successfully in ${gptDuration}ms`);
+        break; // Success - exit loop
+      } catch (error: any) {
+        lastError = error;
+        // Check if it's a model-specific error (model not found/not available)
+        if (error?.code === "model_not_found" || error?.message?.includes("model") || error?.status === 404) {
+          console.log(`[${requestId}] Model ${model} not available, trying next model...`);
+          continue; // Try next model
+        }
+        // For other errors (quota, rate limit, etc.), break and handle below
+        console.log(`[${requestId}] Error with model ${model}: ${error?.message || error}`);
+        break;
+      }
+    }
+
+    if (!usedModel) {
+      // All models failed
+      throw lastError || new Error("No available text-to-text models");
+    }
+
+    const improvedLength = improvedText.length;
+    console.log(`[${requestId}] Text improved using ${usedModel}: ${textLength} -> ${improvedLength} characters (${improvedLength - textLength > 0 ? '+' : ''}${improvedLength - textLength})`);
 
     const totalDuration = Date.now() - startTime;
     console.log(`[${requestId}] Post-processing request completed successfully in ${totalDuration}ms`);
@@ -127,7 +182,7 @@ Improved text:`;
     return NextResponse.json({
       text: improvedText,
       improved: true,
-      model: "gpt-5-nano", // Return the model used
+      model: usedModel, // Return the model actually used
     });
   } catch (error: any) {
     const totalDuration = Date.now() - startTime;
