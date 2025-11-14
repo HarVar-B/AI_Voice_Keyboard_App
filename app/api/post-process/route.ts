@@ -80,7 +80,7 @@ Improved text:`;
 
     // Call OpenAI GPT API
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // Using mini for cost efficiency
+      model: "gpt-5-nano", // Using GPT-5-nano for ultra-low latency and cost efficiency
       messages: [
         {
           role: "system",
@@ -106,19 +106,15 @@ Improved text:`;
     
     // Always return the original text if processing fails
     // This ensures the app continues to work without OpenAI
-    try {
-      const { text } = await request.json();
-      return NextResponse.json({
-        text: text?.trim() || "",
-        improved: false,
+    // Note: We can't re-read the request body, so we'll return an error
+    // The frontend will handle this by keeping the original text
+    return NextResponse.json(
+      { 
         error: error.message || "Post-processing failed",
-      });
-    } catch {
-      return NextResponse.json(
-        { error: "Internal server error" },
-        { status: 500 }
-      );
-    }
+        improved: false 
+      },
+      { status: 500 }
+    );
   }
 }
 
