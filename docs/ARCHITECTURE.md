@@ -43,6 +43,12 @@ AI Voice Keyboard is a real-time voice transcription application that processes 
 - **Tailwind CSS**: Utility-first CSS framework
 - **Lucide React**: Icon library
 
+### UI Layout & Responsive Design
+- **Desktop Layout (≥1024px)**: Two-column layout with history on the left half and recording controls (recorder, transcription box, API key input) on the right half
+- **Mobile Layout (<1024px)**: Single-column stacked layout with recording controls appearing first, followed by history below
+- **Responsive Breakpoints**: Uses Tailwind's `lg` breakpoint (1024px) to switch between layouts
+- **History Section**: Scrollable container with max height to prevent page overflow on desktop
+
 ### Backend
 - **Next.js API Routes**: Serverless API endpoints
 - **Node.js Runtime**: Server-side JavaScript execution

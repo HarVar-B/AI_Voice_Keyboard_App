@@ -10,7 +10,9 @@ A real-time voice transcription application that converts speech to text using A
 - **Post-Processing**: Optional GPT-powered text improvement for grammar, punctuation, and readability
 - **Transcription History**: Save and manage your transcription history with copy-to-clipboard functionality
 - **User Authentication**: Secure email/password authentication with session management
-- **Responsive Design**: Modern UI built with ShadCN components, works on desktop and mobile
+- **Responsive Design**: Modern UI built with ShadCN components with optimized layouts:
+  - **Desktop**: Two-column layout with history on the left and recording controls on the right
+  - **Mobile**: Single-column layout with recording controls prioritized at the top
 - **Theme Support**: Dark/light mode toggle
 
 ## 🛠️ Tech Stack

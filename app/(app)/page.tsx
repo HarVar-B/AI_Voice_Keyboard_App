@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Mic, Square, Copy, Check, X, History, Trash2, Save } from "lucide-react";
@@ -43,6 +44,7 @@ export default function DictationPage() {
   const [whisperAvailable, setWhisperAvailable] = useState<boolean | null>(null);
   const [isCheckingWhisper, setIsCheckingWhisper] = useState(true);
   const [autosave, setAutosave] = useState(true);
+  const [openaiApiKey, setOpenaiApiKey] = useState<string>("");
   const pendingPostProcessingRef = useRef<Map<string, string>>(new Map());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -56,6 +58,23 @@ export default function DictationPage() {
     fetchTranscriptions();
   }, []);
 
+  // Load API key from localStorage on mount
+  useEffect(() => {
+    const savedKey = localStorage.getItem("openai_api_key");
+    if (savedKey) {
+      setOpenaiApiKey(savedKey);
+    }
+  }, []);
+
+  // Save API key to localStorage when it changes
+  useEffect(() => {
+    if (openaiApiKey) {
+      localStorage.setItem("openai_api_key", openaiApiKey);
+    } else {
+      localStorage.removeItem("openai_api_key");
+    }
+  }, [openaiApiKey]);
+
   // Check Whisper availability and Web Speech API on mount
   useEffect(() => {
     const checkAvailability = async () => {
@@ -63,7 +82,10 @@ export default function DictationPage() {
       
       // Check Whisper API availability
       try {
-        const response = await fetch("/api/check-whisper");
+        const url = openaiApiKey 
+          ? `/api/check-whisper?openaiApiKey=${encodeURIComponent(openaiApiKey)}`
+          : "/api/check-whisper";
+        const response = await fetch(url);
         if (response.ok) {
           const data = await response.json();
           setWhisperAvailable(data.available === true);
@@ -90,7 +112,7 @@ export default function DictationPage() {
     };
 
     checkAvailability();
-  }, []);
+  }, [openaiApiKey]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -146,13 +168,16 @@ export default function DictationPage() {
    * - Shows error toast if transcription fails
    * - Ensures counter is decremented even on error to prevent stuck states
    */
-  const handleDataAvailable = async (event: BlobEvent) => {
+  const handleDataAvailable = useCallback(async (event: BlobEvent) => {
     if (event.data.size > 0) {
       pendingTranscriptionsRef.current += 1;
       setIsTranscribing(true);
       try {
         const formData = new FormData();
         formData.append("audio", event.data, "audio.webm");
+        if (openaiApiKey) {
+          formData.append("openaiApiKey", openaiApiKey);
+        }
 
         const response = await fetch("/api/transcribe", {
           method: "POST",
@@ -188,7 +213,7 @@ export default function DictationPage() {
         setIsTranscribing(pendingTranscriptionsRef.current > 0);
       }
     }
-  };
+  }, [openaiApiKey, showToast]);
 
   /**
    * Post-processes transcription text using OpenAI GPT to improve quality.
@@ -210,7 +235,10 @@ export default function DictationPage() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ 
+          text,
+          openaiApiKey: openaiApiKey || undefined 
+        }),
       });
 
       if (!response.ok) {
@@ -277,7 +305,7 @@ export default function DictationPage() {
         setIsPostProcessing(false);
       }
     }
-  }, []);
+  }, [openaiApiKey, showToast]);
 
   /**
    * Starts recording using Web Speech API (free, browser-based transcription).
@@ -695,7 +723,10 @@ export default function DictationPage() {
             headers: {
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({ text: finalTranscript }),
+            body: JSON.stringify({ 
+              text: finalTranscript,
+              openaiApiKey: openaiApiKey || undefined 
+            }),
           });
 
           if (response.ok) {
@@ -826,7 +857,7 @@ export default function DictationPage() {
     };
 
     waitForTranscriptions();
-  }, [transcript, originalTranscript, transcriptionSource, postProcessingModel, autosave, showToast]);
+  }, [transcript, originalTranscript, transcriptionSource, postProcessingModel, autosave, openaiApiKey, showToast]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -938,267 +969,295 @@ export default function DictationPage() {
   };
 
   return (
-    <div className="container mx-auto max-w-4xl p-4 sm:p-6 space-y-6 sm:space-y-8">
-      <div className="space-y-4">
+    <div className="container mx-auto max-w-7xl p-4 sm:p-6">
+      <div className="space-y-4 mb-6 sm:mb-8">
         <h1 className="text-3xl font-bold">Dictation</h1>
         <p className="text-muted-foreground">
           Start recording to transcribe your speech in real-time
         </p>
       </div>
 
-      <div className="space-y-4">
-        <div className="flex justify-center relative">
-          {isRecording && (
-            <div className="absolute inset-0 flex items-center justify-center" aria-hidden="true">
-              <div className="h-24 w-24 rounded-full bg-destructive/20 animate-ping" />
-              <div className="absolute h-20 w-20 rounded-full bg-destructive/10" />
-            </div>
-          )}
-          {isRecording ? (
-            <Button
-              size="lg"
-              className="h-20 w-20 rounded-full bg-destructive hover:bg-destructive/90 transition-all duration-200 relative z-10 shadow-xl shadow-destructive/30 cursor-pointer"
-              onClick={stopRecording}
-              aria-label="Stop recording"
-              aria-pressed="true"
-              aria-describedby="recording-status"
-            >
-              <Square className="h-8 w-8" aria-hidden="true" />
-            </Button>
-          ) : (
-            <Button
-              size="lg"
-              className="h-20 w-20 rounded-full transition-all duration-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl cursor-pointer"
-              onClick={startRecording}
-              disabled={isSaving || isTranscribing}
-              aria-label="Start recording"
-              aria-pressed="false"
-              aria-describedby="recording-status"
-            >
-              <Mic className="h-8 w-8" aria-hidden="true" />
-            </Button>
-          )}
-        </div>
-        <div className="text-center space-y-2">
-          <p id="recording-status" className="text-sm font-medium" role="status" aria-live="polite" aria-atomic="true">
-            {isRecording
-              ? `Recording... ${formatDuration(recordingDuration)}`
-              : isSaving
-              ? "Saving transcription..."
-              : isTranscribing
-              ? "Processing..."
-              : isPostProcessing
-              ? "Improving transcription..."
-              : "Click to start recording"}
-          </p>
-          {isTranscribing && !isRecording && (
-            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              <span>Transcribing audio...</span>
-            </div>
-          )}
-          {isPostProcessing && !isRecording && (
-            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              <span>Improving transcription with AI...</span>
-            </div>
-          )}
-          {isSaving && (
-            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              <span>Saving to history...</span>
-            </div>
-          )}
-          {isRecording && (
-            <div className="space-y-1" role="region" aria-label="Recording instructions">
-              <p className="text-xs text-muted-foreground">
-                {whisperAvailable 
-                  ? "Audio is being transcribed every 5 seconds using Whisper-1"
-                  : "Audio is being transcribed in real-time using Web Speech API"}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Press <kbd className="px-1.5 py-0.5 text-xs font-semibold text-foreground bg-muted border border-border rounded">Space</kbd> to stop or <kbd className="px-1.5 py-0.5 text-xs font-semibold text-foreground bg-muted border border-border rounded">Esc</kbd> to cancel
-              </p>
-            </div>
-          )}
-          {!isRecording && !isSaving && !isTranscribing && (
-            <p className="text-xs text-muted-foreground">
-              Press <kbd className="px-1.5 py-0.5 text-xs font-semibold text-foreground bg-muted border border-border rounded">Space</kbd> to start recording
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <label htmlFor="transcription-textarea" className="text-sm font-medium">Transcription</label>
-          {transcript && (
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  if (confirm("Are you sure you want to clear the transcript?")) {
-                    setTranscript("");
-                    setOriginalTranscript("");
-                    setPostProcessingModel(null);
-                    showToast("Transcript cleared", "info");
-                  }
-                }}
-                className="h-7 text-xs"
-                aria-label="Clear transcription"
-              >
-                <X className="h-3 w-3 mr-1" aria-hidden="true" />
-                Clear
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  navigator.clipboard.writeText(transcript);
-                  showToast("Transcription copied!", "success");
-                }}
-                className="h-7 text-xs cursor-pointer"
-                aria-label="Copy transcription to clipboard"
-              >
-                <Copy className="h-3 w-3 mr-1" aria-hidden="true" />
-                Copy
-              </Button>
-            </div>
-          )}
-        </div>
-        <div className="relative">
-          <Textarea
-            id="transcription-textarea"
-            readOnly
-            value={transcript}
-            placeholder="Your transcription will appear here..."
-            className="min-h-[200px] resize-none transition-all duration-200 shadow-sm pb-10"
-            aria-label="Transcription output"
-            aria-readonly="true"
-            aria-describedby="transcription-description"
-          />
-          <div className="absolute bottom-2 left-2 flex items-center gap-2 bg-background/80 backdrop-blur-sm px-2 py-1 rounded-md">
-            <Switch
-              id="autosave-toggle"
-              checked={autosave}
-              onCheckedChange={setAutosave}
-              aria-label={autosave ? "Disable autosave" : "Enable autosave"}
-            />
-            <Label
-              htmlFor="autosave-toggle"
-              className="text-xs font-normal cursor-pointer text-muted-foreground"
-            >
-              Autosave
-            </Label>
-          </div>
-        </div>
-        <p id="transcription-description" className="sr-only">
-          Real-time transcription of your speech. The text will update automatically as you speak.
-        </p>
-        {!autosave && transcript.trim() && !isRecording && (
-          <div className="flex justify-end">
-            <Button
-              onClick={() => saveTranscription()}
-              disabled={isSaving || !transcript.trim()}
-              className="gap-2"
-              aria-label="Save transcription to history"
-            >
-              {isSaving ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  Saving...
-                </>
-              ) : (
-                <>
-                  <Save className="h-4 w-4" aria-hidden="true" />
-                  Save to History
-                </>
+      <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
+        {/* Right Column - Recorder, Transcription, API Key (appears first on mobile, right on desktop) */}
+        <div className="lg:w-1/2 lg:order-2 space-y-6 sm:space-y-8">
+          <div className="space-y-4">
+            <div className="flex justify-center relative">
+              {isRecording && (
+                <div className="absolute inset-0 flex items-center justify-center" aria-hidden="true">
+                  <div className="h-24 w-24 rounded-full bg-destructive/20 animate-ping" />
+                  <div className="absolute h-20 w-20 rounded-full bg-destructive/10" />
+                </div>
               )}
-            </Button>
-          </div>
-        )}
-      </div>
-
-      <div className="space-y-4">
-        <h2 className="text-2xl font-semibold">History</h2>
-        {isLoadingHistory ? (
-          <div className="flex items-center justify-center py-12" role="status" aria-live="polite" aria-busy="true">
-            <div className="flex flex-col items-center gap-3">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-hidden="true" />
-              <p className="text-sm text-muted-foreground">Loading history...</p>
+              {isRecording ? (
+                <Button
+                  size="lg"
+                  className="h-20 w-20 rounded-full bg-destructive hover:bg-destructive/90 transition-all duration-200 relative z-10 shadow-xl shadow-destructive/30 cursor-pointer"
+                  onClick={stopRecording}
+                  aria-label="Stop recording"
+                  aria-pressed="true"
+                  aria-describedby="recording-status"
+                >
+                  <Square className="h-8 w-8" aria-hidden="true" />
+                </Button>
+              ) : (
+                <Button
+                  size="lg"
+                  className="h-20 w-20 rounded-full transition-all duration-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl cursor-pointer"
+                  onClick={startRecording}
+                  disabled={isSaving || isTranscribing}
+                  aria-label="Start recording"
+                  aria-pressed="false"
+                  aria-describedby="recording-status"
+                >
+                  <Mic className="h-8 w-8" aria-hidden="true" />
+                </Button>
+              )}
+            </div>
+            <div className="text-center space-y-2">
+              <p id="recording-status" className="text-sm font-medium" role="status" aria-live="polite" aria-atomic="true">
+                {isRecording
+                  ? `Recording... ${formatDuration(recordingDuration)}`
+                  : isSaving
+                  ? "Saving transcription..."
+                  : isTranscribing
+                  ? "Processing..."
+                  : isPostProcessing
+                  ? "Improving transcription..."
+                  : "Click to start recording"}
+              </p>
+              {isTranscribing && !isRecording && (
+                <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  <span>Transcribing audio...</span>
+                </div>
+              )}
+              {isPostProcessing && !isRecording && (
+                <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  <span>Improving transcription with AI...</span>
+                </div>
+              )}
+              {isSaving && (
+                <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  <span>Saving to history...</span>
+                </div>
+              )}
+              {isRecording && (
+                <div className="space-y-1" role="region" aria-label="Recording instructions">
+                  <p className="text-xs text-muted-foreground">
+                    {whisperAvailable 
+                      ? "Audio is being transcribed every 5 seconds using Whisper-1"
+                      : "Audio is being transcribed in real-time using Web Speech API"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Press <kbd className="px-1.5 py-0.5 text-xs font-semibold text-foreground bg-muted border border-border rounded">Space</kbd> to stop or <kbd className="px-1.5 py-0.5 text-xs font-semibold text-foreground bg-muted border border-border rounded">Esc</kbd> to cancel
+                  </p>
+                </div>
+              )}
+              {!isRecording && !isSaving && !isTranscribing && (
+                <p className="text-xs text-muted-foreground">
+                  Press <kbd className="px-1.5 py-0.5 text-xs font-semibold text-foreground bg-muted border border-border rounded">Space</kbd> to start recording
+                </p>
+              )}
             </div>
           </div>
-        ) : transcriptions.length === 0 ? (
-          <div className="rounded-lg border border-dashed p-12 text-center" role="status" aria-live="polite">
-            <div className="flex flex-col items-center gap-3">
-              <History className="h-12 w-12 text-muted-foreground/50" aria-hidden="true" />
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-foreground">
-                  No transcriptions yet
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  Start recording to create your first transcription
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label htmlFor="transcription-textarea" className="text-sm font-medium">Transcription</label>
+              {transcript && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      if (confirm("Are you sure you want to clear the transcript?")) {
+                        setTranscript("");
+                        setOriginalTranscript("");
+                        setPostProcessingModel(null);
+                        showToast("Transcript cleared", "info");
+                      }
+                    }}
+                    className="h-7 text-xs"
+                    aria-label="Clear transcription"
+                  >
+                    <X className="h-3 w-3 mr-1" aria-hidden="true" />
+                    Clear
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      navigator.clipboard.writeText(transcript);
+                      showToast("Transcription copied!", "success");
+                    }}
+                    className="h-7 text-xs cursor-pointer"
+                    aria-label="Copy transcription to clipboard"
+                  >
+                    <Copy className="h-3 w-3 mr-1" aria-hidden="true" />
+                    Copy
+                  </Button>
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <Textarea
+                id="transcription-textarea"
+                readOnly
+                value={transcript}
+                placeholder="Your transcription will appear here..."
+                className="min-h-[200px] resize-none transition-all duration-200 shadow-sm pb-10"
+                aria-label="Transcription output"
+                aria-readonly="true"
+                aria-describedby="transcription-description"
+              />
+              <div className="absolute bottom-2 left-2 flex items-center gap-2 bg-background/80 backdrop-blur-sm px-2 py-1 rounded-md">
+                <Switch
+                  id="autosave-toggle"
+                  checked={autosave}
+                  onCheckedChange={setAutosave}
+                  aria-label={autosave ? "Disable autosave" : "Enable autosave"}
+                />
+                <Label
+                  htmlFor="autosave-toggle"
+                  className="text-xs font-normal cursor-pointer text-muted-foreground"
+                >
+                  Autosave
+                </Label>
+              </div>
+            </div>
+            <p id="transcription-description" className="sr-only">
+              Real-time transcription of your speech. The text will update automatically as you speak.
+            </p>
+            {!autosave && transcript.trim() && !isRecording && (
+              <div className="flex justify-end">
+                <Button
+                  onClick={() => saveTranscription()}
+                  disabled={isSaving || !transcript.trim()}
+                  className="gap-2"
+                  aria-label="Save transcription to history"
+                >
+                  {isSaving ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Save className="h-4 w-4" aria-hidden="true" />
+                      Save to History
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-4">
+            <div className="rounded-lg border p-4 space-y-3">
+              <div className="space-y-2">
+                <Label htmlFor="openai-api-key" className="text-sm font-medium">
+                  OpenAI API Key (Optional)
+                </Label>
+                <Input
+                  id="openai-api-key"
+                  type="password"
+                  placeholder="sk-..."
+                  value={openaiApiKey}
+                  onChange={(e) => setOpenaiApiKey(e.target.value)}
+                  className="font-mono text-sm"
+                  aria-describedby="api-key-description"
+                />
+                <p id="api-key-description" className="text-xs text-muted-foreground">
+                  Your API key is stored locally in your browser and only used to process your recordings. We don't store or use it for anything else.
                 </p>
               </div>
             </div>
           </div>
-        ) : (
-          <div className="space-y-3 sm:space-y-4" role="region" aria-label="Transcription history" aria-live="polite">
-            {transcriptions.map((transcription) => (
-              <Card key={transcription.id} className="transition-shadow shadow-sm hover:shadow-md">
-                <CardHeader>
-                  <div className="flex items-start justify-between">
-                    <div className="space-y-1">
-                      <CardTitle className="text-sm font-medium">
-                        {formatDate(transcription.createdAt)}
-                      </CardTitle>
+        </div>
+
+        {/* Left Column - History (appears second on mobile, left on desktop) */}
+        <div className="lg:w-1/2 lg:order-1 space-y-4">
+          <h2 className="text-2xl font-semibold">History</h2>
+          {isLoadingHistory ? (
+            <div className="flex items-center justify-center py-12" role="status" aria-live="polite" aria-busy="true">
+              <div className="flex flex-col items-center gap-3">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-hidden="true" />
+                <p className="text-sm text-muted-foreground">Loading history...</p>
+              </div>
+            </div>
+          ) : transcriptions.length === 0 ? (
+            <div className="rounded-lg border border-dashed p-12 text-center" role="status" aria-live="polite">
+              <div className="flex flex-col items-center gap-3">
+                <History className="h-12 w-12 text-muted-foreground/50" aria-hidden="true" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">
+                    No transcriptions yet
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Start recording to create your first transcription
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3 sm:space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto" role="region" aria-label="Transcription history" aria-live="polite">
+              {transcriptions.map((transcription) => (
+                <Card key={transcription.id} className="transition-shadow shadow-sm hover:shadow-md">
+                  <CardHeader>
+                    <div className="flex items-start justify-between">
+                      <div className="space-y-1">
+                        <CardTitle className="text-sm font-medium">
+                          {formatDate(transcription.createdAt)}
+                        </CardTitle>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => copyToClipboard(transcription.content, transcription.id)}
+                          aria-label={`Copy transcription from ${formatDate(transcription.createdAt)}`}
+                          className="shadow-sm hover:shadow-md cursor-pointer"
+                        >
+                          {copiedId === transcription.id ? (
+                            <>
+                              <Check className="h-4 w-4 mr-2" aria-hidden="true" />
+                              Copied
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-4 w-4 mr-2" aria-hidden="true" />
+                              Copy
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDelete(transcription.id)}
+                          disabled={deletingId === transcription.id}
+                          aria-label={`Delete transcription from ${formatDate(transcription.createdAt)}`}
+                          aria-busy={deletingId === transcription.id}
+                          className={deletingId === transcription.id ? "cursor-not-allowed" : "cursor-pointer"}
+                        >
+                          {deletingId === transcription.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                          ) : (
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          )}
+                        </Button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => copyToClipboard(transcription.content, transcription.id)}
-                        aria-label={`Copy transcription from ${formatDate(transcription.createdAt)}`}
-                        className="shadow-sm hover:shadow-md cursor-pointer"
-                      >
-                        {copiedId === transcription.id ? (
-                          <>
-                            <Check className="h-4 w-4 mr-2" aria-hidden="true" />
-                            Copied
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="h-4 w-4 mr-2" aria-hidden="true" />
-                            Copy
-                          </>
-                        )}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleDelete(transcription.id)}
-                        disabled={deletingId === transcription.id}
-                        aria-label={`Delete transcription from ${formatDate(transcription.createdAt)}`}
-                        aria-busy={deletingId === transcription.id}
-                        className={deletingId === transcription.id ? "cursor-not-allowed" : "cursor-pointer"}
-                      >
-                        {deletingId === transcription.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                        ) : (
-                          <Trash2 className="h-4 w-4" aria-hidden="true" />
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-sm whitespace-pre-wrap">{transcription.content}</p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm whitespace-pre-wrap">{transcription.content}</p>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
