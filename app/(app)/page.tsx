@@ -3,7 +3,9 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Mic, Square, Copy, Check, X, History, Trash2 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Mic, Square, Copy, Check, X, History, Trash2, Save } from "lucide-react";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/components/ui/toast";
 import {
@@ -40,6 +42,7 @@ export default function DictationPage() {
   const [useWebSpeechAPI, setUseWebSpeechAPI] = useState(false);
   const [whisperAvailable, setWhisperAvailable] = useState<boolean | null>(null);
   const [isCheckingWhisper, setIsCheckingWhisper] = useState(true);
+  const [autosave, setAutosave] = useState(true);
   const pendingPostProcessingRef = useRef<Map<string, string>>(new Map());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -749,74 +752,81 @@ export default function DictationPage() {
           showToast(userMessage, "info");
         }
         
-        // Save with all metadata
-        // Always preserve original content - if post-processing failed, we still want to save the original
-        const contentToSave = finalTranscript;
-        
-        // Determine original content to save:
-        // - If post-processing succeeded: save the original before post-processing
-        // - If post-processing failed: save the original (which is same as contentToSave, but we save it for record-keeping)
-        // - If no post-processing was attempted: don't save originalContent (it's the same as content)
-        let originalContentToSave: string | null = null;
-        if (postProcessingSucceeded) {
-          // Post-processing succeeded: save the original before post-processing
-          originalContentToSave = originalBeforeFinalPostProcess;
-        } else if (originalBeforeFinalPostProcess && originalBeforeFinalPostProcess !== contentToSave) {
-          // Post-processing was attempted but failed or didn't improve: save original if different
-          originalContentToSave = originalBeforeFinalPostProcess;
-        } else if (!postProcessingSucceeded && originalBeforeFinalPostProcess) {
-          // Post-processing failed: save original content even if same (for record-keeping)
-          // This ensures we have a record of what was transcribed originally
-          originalContentToSave = originalBeforeFinalPostProcess;
-        }
-        
-        const wasPostProcessed = postProcessingSucceeded && finalPostProcessModel !== null;
-        
-        console.log("Saving transcription:", {
-          contentLength: contentToSave.length,
-          originalLength: originalContentToSave?.length || 0,
-          postProcessed: wasPostProcessed,
-          postProcessingSucceeded,
-          transcriptionSource,
-        });
-        
-        setIsSaving(true);
-        try {
-          const response = await fetch("/api/transcriptions", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              content: contentToSave,
-              originalContent: originalContentToSave,
-              transcriptionSource: transcriptionSource,
-              postProcessed: wasPostProcessed,
-              postProcessingModel: wasPostProcessed ? finalPostProcessModel : null,
-            }),
-          });
-
-          if (!response.ok) {
-            throw new Error("Failed to save transcription");
+        // Only save if autosave is enabled
+        if (autosave) {
+          // Save with all metadata
+          // Always preserve original content - if post-processing failed, we still want to save the original
+          const contentToSave = finalTranscript;
+          
+          // Determine original content to save:
+          // - If post-processing succeeded: save the original before post-processing
+          // - If post-processing failed: save the original (which is same as contentToSave, but we save it for record-keeping)
+          // - If no post-processing was attempted: don't save originalContent (it's the same as content)
+          let originalContentToSave: string | null = null;
+          if (postProcessingSucceeded) {
+            // Post-processing succeeded: save the original before post-processing
+            originalContentToSave = originalBeforeFinalPostProcess;
+          } else if (originalBeforeFinalPostProcess && originalBeforeFinalPostProcess !== contentToSave) {
+            // Post-processing was attempted but failed or didn't improve: save original if different
+            originalContentToSave = originalBeforeFinalPostProcess;
+          } else if (!postProcessingSucceeded && originalBeforeFinalPostProcess) {
+            // Post-processing failed: save original content even if same (for record-keeping)
+            // This ensures we have a record of what was transcribed originally
+            originalContentToSave = originalBeforeFinalPostProcess;
           }
+          
+          const wasPostProcessed = postProcessingSucceeded && finalPostProcessModel !== null;
+          
+          console.log("Saving transcription:", {
+            contentLength: contentToSave.length,
+            originalLength: originalContentToSave?.length || 0,
+            postProcessed: wasPostProcessed,
+            postProcessingSucceeded,
+            transcriptionSource,
+          });
+          
+          setIsSaving(true);
+          try {
+            const response = await fetch("/api/transcriptions", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                content: contentToSave,
+                originalContent: originalContentToSave,
+                transcriptionSource: transcriptionSource,
+                postProcessed: wasPostProcessed,
+                postProcessingModel: wasPostProcessed ? finalPostProcessModel : null,
+              }),
+            });
 
-          const data = await response.json();
-          setTranscriptions((prev) => [data.transcription, ...prev]);
-          setTranscript("");
-          setOriginalTranscript("");
-          setPostProcessingModel(null);
-          showToast("Transcription saved!", "success");
-        } catch (error) {
-          console.error("Error saving transcription:", error);
-          showToast("Failed to save transcription", "error");
-        } finally {
-          setIsSaving(false);
+            if (!response.ok) {
+              throw new Error("Failed to save transcription");
+            }
+
+            const data = await response.json();
+            setTranscriptions((prev) => [data.transcription, ...prev]);
+            setTranscript("");
+            setOriginalTranscript("");
+            setPostProcessingModel(null);
+            showToast("Transcription saved!", "success");
+          } catch (error) {
+            console.error("Error saving transcription:", error);
+            showToast("Failed to save transcription", "error");
+          } finally {
+            setIsSaving(false);
+          }
+        } else {
+          // Autosave is off, keep the transcript in the textarea for manual save
+          // Update the transcript state with the final processed version
+          setTranscript(finalTranscript);
         }
       }
     };
 
     waitForTranscriptions();
-  }, [transcript, originalTranscript, transcriptionSource, postProcessingModel, showToast]);
+  }, [transcript, originalTranscript, transcriptionSource, postProcessingModel, autosave, showToast]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -1030,6 +1040,8 @@ export default function DictationPage() {
                 onClick={() => {
                   if (confirm("Are you sure you want to clear the transcript?")) {
                     setTranscript("");
+                    setOriginalTranscript("");
+                    setPostProcessingModel(null);
                     showToast("Transcript cleared", "info");
                   }
                 }}
@@ -1055,19 +1067,57 @@ export default function DictationPage() {
             </div>
           )}
         </div>
-        <Textarea
-          id="transcription-textarea"
-          readOnly
-          value={transcript}
-          placeholder="Your transcription will appear here..."
-          className="min-h-[200px] resize-none transition-all duration-200 shadow-sm"
-          aria-label="Transcription output"
-          aria-readonly="true"
-          aria-describedby="transcription-description"
-        />
+        <div className="relative">
+          <Textarea
+            id="transcription-textarea"
+            readOnly
+            value={transcript}
+            placeholder="Your transcription will appear here..."
+            className="min-h-[200px] resize-none transition-all duration-200 shadow-sm pb-10"
+            aria-label="Transcription output"
+            aria-readonly="true"
+            aria-describedby="transcription-description"
+          />
+          <div className="absolute bottom-2 left-2 flex items-center gap-2 bg-background/80 backdrop-blur-sm px-2 py-1 rounded-md">
+            <Switch
+              id="autosave-toggle"
+              checked={autosave}
+              onCheckedChange={setAutosave}
+              aria-label={autosave ? "Disable autosave" : "Enable autosave"}
+            />
+            <Label
+              htmlFor="autosave-toggle"
+              className="text-xs font-normal cursor-pointer text-muted-foreground"
+            >
+              Autosave
+            </Label>
+          </div>
+        </div>
         <p id="transcription-description" className="sr-only">
           Real-time transcription of your speech. The text will update automatically as you speak.
         </p>
+        {!autosave && transcript.trim() && !isRecording && (
+          <div className="flex justify-end">
+            <Button
+              onClick={() => saveTranscription()}
+              disabled={isSaving || !transcript.trim()}
+              className="gap-2"
+              aria-label="Save transcription to history"
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Save className="h-4 w-4" aria-hidden="true" />
+                  Save to History
+                </>
+              )}
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="space-y-4">
