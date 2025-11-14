@@ -31,6 +31,8 @@ export default function DictationPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [useWebSpeechAPI, setUseWebSpeechAPI] = useState(false);
+  const [whisperAvailable, setWhisperAvailable] = useState<boolean | null>(null);
+  const [isCheckingWhisper, setIsCheckingWhisper] = useState(true);
   const pendingPostProcessingRef = useRef<Map<string, string>>(new Map());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -44,12 +46,40 @@ export default function DictationPage() {
     fetchTranscriptions();
   }, []);
 
-  // Check if Web Speech API is available
+  // Check Whisper availability and Web Speech API on mount
   useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      setUseWebSpeechAPI(true);
-    }
+    const checkAvailability = async () => {
+      setIsCheckingWhisper(true);
+      
+      // Check Whisper API availability
+      try {
+        const response = await fetch("/api/check-whisper");
+        if (response.ok) {
+          const data = await response.json();
+          setWhisperAvailable(data.available === true);
+          if (data.available) {
+            console.log("Whisper-1 is available, will use as primary transcription method");
+          } else {
+            console.log("Whisper-1 not available:", data.reason);
+          }
+        } else {
+          setWhisperAvailable(false);
+        }
+      } catch (error) {
+        console.error("Error checking Whisper availability:", error);
+        setWhisperAvailable(false);
+      } finally {
+        setIsCheckingWhisper(false);
+      }
+
+      // Check if Web Speech API is available as fallback
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        setUseWebSpeechAPI(true);
+      }
+    };
+
+    checkAvailability();
   }, []);
 
   // Cleanup on unmount
@@ -301,19 +331,27 @@ export default function DictationPage() {
   }, [isRecording, showToast, postProcessText]);
 
   /**
-   * Initiates audio recording using the browser's MediaRecorder API.
+   * Initiates audio recording using the browser's MediaRecorder API with Whisper-1,
+   * or falls back to Web Speech API if Whisper is not available.
+   * 
+   * Priority:
+   * 1. MediaRecorder + Whisper-1 API (if available and API key has access)
+   * 2. Web Speech API (browser built-in, free fallback)
    * 
    * This function sets up the entire recording pipeline:
-   * 1. Clears any previous transcript
-   * 2. Requests microphone permission from the user
-   * 3. Configures audio constraints (echo cancellation, noise suppression, auto gain)
-   * 4. Creates a MediaRecorder instance with WebM audio format
-   * 5. Configures event handlers for data chunks and errors
-   * 6. Starts recording with 5-second slice intervals
-   * 7. Initializes UI state and duration timer
+   * 1. Checks if Whisper-1 is available
+   * 2. If yes, uses MediaRecorder + Whisper API
+   * 3. If no, falls back to Web Speech API
+   * 4. Clears any previous transcript
+   * 5. Requests microphone permission from the user
+   * 6. Configures audio constraints (echo cancellation, noise suppression, auto gain)
+   * 7. Creates a MediaRecorder instance with WebM audio format (for Whisper)
+   * 8. Configures event handlers for data chunks and errors
+   * 9. Starts recording with 5-second slice intervals (for Whisper)
+   * 10. Initializes UI state and duration timer
    * 
    * The MediaRecorder will automatically fire `ondataavailable` events every 5 seconds,
-   * which triggers `handleDataAvailable` to transcribe each audio chunk.
+   * which triggers `handleDataAvailable` to transcribe each audio chunk with Whisper.
    * 
    * @throws {Error} Various errors can occur:
    * - NotAllowedError: User denied microphone permission
@@ -322,18 +360,37 @@ export default function DictationPage() {
    * - OverconstrainedError: Microphone doesn't support required settings
    * 
    * Browser compatibility:
-   * - Requires modern browser with MediaRecorder API support
-   * - Requires WebM audio format support
+   * - Requires modern browser with MediaRecorder API support (for Whisper)
+   * - Requires WebM audio format support (for Whisper)
+   * - Falls back to Web Speech API if Whisper unavailable
    * - Falls back gracefully with user-friendly error messages
    */
   const startRecording = useCallback(async () => {
-    // Try Web Speech API first if available (free alternative)
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
+    // Wait for Whisper availability check to complete
+    if (isCheckingWhisper) {
+      showToast("Checking transcription service availability...", "info");
+      // Wait a bit for the check to complete
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    // Priority 1: Use Whisper-1 if available (primary method)
+    if (whisperAvailable === true) {
+      return startRecordingWithWhisper();
+    }
+
+    // Priority 2: Fallback to Web Speech API if available
+    if (useWebSpeechAPI) {
       return startRecordingWithWebSpeech();
     }
 
-    // Fallback to MediaRecorder + OpenAI API
+    // No transcription method available
+    showToast("No transcription method available. Please check your API key or use Chrome/Edge browser.", "error");
+  }, [whisperAvailable, useWebSpeechAPI, isCheckingWhisper, showToast, startRecordingWithWebSpeech]);
+
+  /**
+   * Starts recording using MediaRecorder + Whisper-1 API (primary method).
+   */
+  const startRecordingWithWhisper = useCallback(async () => {
     try {
       // Clear previous transcript
       setTranscript("");
@@ -376,7 +433,19 @@ export default function DictationPage() {
       mediaRecorder.onerror = (event) => {
         console.error("MediaRecorder error:", event);
         showToast("Recording error occurred. Please try again.", "error");
-        stopRecording();
+        // Stop recording manually on error
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+        }
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+        setIsRecording(false);
+        if (durationIntervalRef.current) {
+          clearInterval(durationIntervalRef.current);
+          durationIntervalRef.current = null;
+        }
       };
 
       // Start recording with 5-second slices
@@ -392,6 +461,8 @@ export default function DictationPage() {
       durationIntervalRef.current = setInterval(() => {
         setRecordingDuration((prev: number) => prev + 1);
       }, 1000);
+
+      showToast("Using Whisper-1 for transcription", "info");
     } catch (error: any) {
       console.error("Error accessing microphone:", error);
       
@@ -411,7 +482,7 @@ export default function DictationPage() {
       
       showToast(errorMessage, "error");
     }
-  }, [showToast, startRecordingWithWebSpeech]);
+  }, [showToast, handleDataAvailable]);
 
   /**
    * Saves the current transcript to the database and adds it to the history.
@@ -742,7 +813,9 @@ export default function DictationPage() {
           {isRecording && (
             <div className="space-y-1" role="region" aria-label="Recording instructions">
               <p className="text-xs text-muted-foreground">
-                Audio is being transcribed every 5 seconds
+                {whisperAvailable 
+                  ? "Audio is being transcribed every 5 seconds using Whisper-1"
+                  : "Audio is being transcribed in real-time using Web Speech API"}
               </p>
               <p className="text-xs text-muted-foreground">
                 Press <kbd className="px-1.5 py-0.5 text-xs font-semibold text-foreground bg-muted border border-border rounded">Space</kbd> to stop or <kbd className="px-1.5 py-0.5 text-xs font-semibold text-foreground bg-muted border border-border rounded">Esc</kbd> to cancel
